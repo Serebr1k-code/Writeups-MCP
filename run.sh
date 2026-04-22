@@ -60,5 +60,13 @@ echo "$PORT_CHOSEN" > "$BASE_DIR/port.info"
 export WRITEUPS_PORT="$PORT_CHOSEN"
 export WRITEUPS_DB="$DB_PATH"
 
-# Exec uvicorn with the chosen port
-exec uvicorn service:app --host 127.0.0.1 --port "$PORT_CHOSEN"
+# Change to project directory so PYTHONPATH works
+cd "$BASE_DIR"
+export PYTHONPATH="$BASE_DIR"
+
+# Detect uvicorn path
+UVICORN_PATH="${UVICORN_PATH:-$(command -v uvicorn 2>/dev/null || echo /home/Serebr1k/.local/bin/uvicorn)}"
+
+# Daemonize: run in background and exit immediately
+nohup "$UVICORN_PATH" service:app --host 127.0.0.1 --port "$PORT_CHOSEN" > "$BASE_DIR/uvicorn.log" 2>&1 &
+echo "Started uvicorn on port $PORT_CHOSEN (PID: $!)"
