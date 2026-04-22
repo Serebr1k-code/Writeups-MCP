@@ -237,7 +237,7 @@ class WriteupsMCPServer {
                 const cid = this.cacheId++;
                 this.cache.set(cid, { path: row.path });
                 out += cid + '. ' + row.title + '\n';
-                out += '   ' + row.path.replace('/home/Serebr1k/kraber/knowledge_base/', '') + '\n';
+                out += '   ' + row.path + '\n';
                 const snippet = (sr?.s || '').replace(/==/g, '').replace(/\n/g, ' ').substring(0, 80);
                 if (snippet) out += '   ' + snippet + '...\n';
                 out += '\n';
