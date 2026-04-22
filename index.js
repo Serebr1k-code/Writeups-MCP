@@ -18,8 +18,160 @@ import fs from 'fs';
 
 const DB_PATH = process.env.WRITEUPS_DB || path.join(os.homedir(), 'writeups-mcp-opencode', 'data', 'writeups_index.db');
 
-const HELP_TEXT = {
-    search: `search_writeups - Поиск по базе знаний CTF writeups
+class WriteupsMCPServer {
+    constructor() {
+        this.cache = new Map();
+        this.cacheId = 1;
+        
+        this.server = new Server({
+            name: 'Writeups MCP Server',
+            version: '1.0.0'
+        }, {
+            capabilities: {
+                tools: {
+                    search_writeups: {
+                        description: 'Search CTF writeups knowledge base. Database contains: CTF writeups, HackTricks, security techniques, vulnerability explanations, exploitation guides, cheat sheets. Returns numbered results [1], [2], etc. Use read_writeup with ID from results to read full content.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                query: {
+                                    type: 'string',
+                                    description: 'Search query: keywords (SQL injection, XSS), technique name (privilege escalation, LFI to RCE), CVE number (CVE-2024-1234), or any words from documentation. REQUIRED'
+                                },
+                                limit: {
+                                    type: 'number',
+                                    description: 'Maximum number of results to return, default 10',
+                                    default: 10
+                                }
+                            },
+                            required: ['query']
+                        }
+                    },
+                    read_writeup: {
+                        description: 'Read writeup content by ID (from search results) or by full path. ID format: number like 1, 2, 3 from [1], [2] in search results. Shows full file or specific line range. Can read around specific line or range.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                id: {
+                                    type: 'number',
+                                    description: 'Result ID from search (from [1], [2], etc in results). PRIORITY over path.'
+                                },
+                                path: {
+                                    type: 'string',
+                                    description: 'Full path to writeup file. Use ONLY if no id. Example: "/home/Serebr1k/kraber/knowledge_base/SQL Injection/SQLite Injection.md"'
+                                },
+                                lines: {
+                                    type: 'string',
+                                    description: 'Line range: "100-150" (show lines 100-150), "50" (show around line 50), "100-" (from line 100 to end). Default: first 100 lines',
+                                    default: '1-100'
+                                }
+                            }
+                        }
+                    },
+                    help: {
+                        description: 'Show detailed help for writeups MCP tools usage with examples',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                tool: {
+                                    type: 'string',
+                                    description: 'Tool name: "search" for search_help, "read" for read_help, or "all" for everything. Default: all',
+                                    default: 'all'
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+            return {
+                tools: [
+                    {
+                        name: 'search_writeups',
+                        description: 'Search CTF writeups knowledge base. Database contains: CTF writeups, HackTricks, security techniques, vulnerability explanations, exploitation guides, cheat sheets. Returns numbered results [1], [2], etc. Use read_writeup with ID from results to read full content.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                query: {
+                                    type: 'string',
+                                    description: 'Search query: keywords (SQL injection, XSS), technique name (privilege escalation, LFI to RCE), CVE number (CVE-2024-1234), or any words from documentation. REQUIRED'
+                                },
+                                limit: {
+                                    type: 'number',
+                                    description: 'Maximum number of results to return, default 10',
+                                    default: 10
+                                }
+                            },
+                            required: ['query']
+                        }
+                    },
+                    {
+                        name: 'read_writeup',
+                        description: 'Read writeup content by ID (from search results) or by full path. ID format: number like 1, 2, 3 from [1], [2] in search results. Shows full file or specific line range. Can read around specific line or range.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                id: {
+                                    type: 'number',
+                                    description: 'Result ID from search (from [1], [2], etc in results). PRIORITY over path.'
+                                },
+                                path: {
+                                    type: 'string',
+                                    description: 'Full path to writeup file. Use ONLY if no id. Example: "/home/Serebr1k/kraber/knowledge_base/SQL Injection/SQLite Injection.md"'
+                                },
+                                lines: {
+                                    type: 'string',
+                                    description: 'Line range: "100-150" (show lines 100-150), "50" (show around line 50), "100-" (from line 100 to end). Default: first 100 lines',
+                                    default: '1-100'
+                                }
+                            }
+                        }
+                    },
+                    {
+                        name: 'help',
+                        description: 'Show detailed help for writeups MCP tools usage with examples',
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                tool: {
+                                    type: 'string',
+                                    description: 'Tool name: "search" for search_help, "read" for read_help, or "all" for everything. Default: all',
+                                    default: 'all'
+                                }
+                            }
+                        }
+                    }
+                ]
+            };
+        });
+        
+        this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+            const name = request.params?.name;
+            const args = request.params?.arguments || {};
+            
+            if (name === 'search_writeups') {
+                if (!args.query || args.query.trim() === '') {
+                    return { content: [{ type: 'text', text: 'Error: query is required. Use: search_writeups({query: "your search terms", limit: 10})' }] };
+                }
+                return await this.search(args.query, args.limit || 10);
+            } else if (name === 'read_writeup') {
+                if (!args.id && !args.path) {
+                    return { content: [{ type: 'text', text: 'Error: provide id (from search) or path. Example: read_writeup({id: 1}) or read_writeup({path: "/full/path.md", lines: "1-50"})' }] };
+                }
+                return await this.readWriteup(args.id, args.path, args.lines);
+            } else if (name === 'help') {
+                return this.getHelp(args.tool || 'all');
+            }
+            
+            return { content: [{ type: 'text', text: 'Unknown tool: ' + name + '. Available: search_writeups, read_writeup, help' }] };
+        });
+    }
+    
+    getHelp(tool) {
+        const helpText = {
+            search: `search_writeups - Поиск по базе знаний CTF writeups
 ==========================================================
 Содержит: CTF writeups, HackTricks, техники взлома, описания уязвимостей,
 руководства по эксплуатации, читшиты и др. документация по безопасности
@@ -41,12 +193,12 @@ const HELP_TEXT = {
 Возвращает нумерованный список [1], [2], [3]...
 Для чтения используй read_writeup с полученным ID`,
 
-    read: `read_writeup - Чтение содержимого райтапа
+            read: `read_writeup - Чтение содержимого райтапа
 ==========================================
 Читает файл полностью или частично по ID из поиска или по пути
 
 ПАРАМЕТРЫ:
-- id (number, опционально): ID из результатов поиска (например [1])
+- id (number, опционально): ID из результатов поиска (нап��имер [1])
   ПРИОРИТЕТНЕЕ чем path - используй этот если есть
 - path (string, опционально): Полный путь к файлу
   Пример: "/home/Serebr1k/kraber/knowledge_base/SQL Injection/SQLite Injection.md"
@@ -65,128 +217,18 @@ const HELP_TEXT = {
 ОШИБКИ:
 - "Must provide ID or path" - нужно указать id или path
 - "File not found" - файл не существует
-- "Invalid line range" - неверный формат строк`,
-
-    invalid: `НЕВЕРНЫЙ ВЫЗОВ!
-==============
-Получен неправильный запрос к MCP. Используй tools/call с правильным форматом:
-
-ДЛЯ ПОИСКА:
-{"method": "tools/call", "params": {"name": "search_writeups", "arguments": {"query": "...", "limit": 10}}
-
-ДЛЯ ЧТЕНИЯ:
-{"method": "tools/call", "params": {"name": "read_writeup", "arguments": {"id": 1}}}
-{"method": "tools/call", "params": {"name": "read_writeup", "arguments": {"path": "/full/path", "lines": "1-50"}}}
-
-Доступные инструменты: search_writeups, read_writeup`
-};
-
-class WriteupsMCPServer {
-    constructor() {
-        this.cache = new Map();
-        this.cacheId = 1;
+- "Invalid line range" - неверный формат строк`
+        };
         
-        this.server = new Server({
-            name: 'Writeups MCP Server',
-            version: '1.0.0'
-        }, {
-            capabilities: {
-                tools: {}
-            }
-        });
-        
-        this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-            return {
-                tools: [
-                    {
-                        name: 'search_writeups',
-                        description: 'Search CTF writeups knowledge base. Database contains: CTF writeups, HackTricks, security techniques, vulnerability explanations, exploitation guides, cheat sheets. Returns numbered results. Use read_writeup with ID to read.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                query: {
-                                    type: 'string',
-                                    description: 'Search query: keywords (SQL injection), technique name (privilege escalation), CVE number, or any words from docs. REQUIRED'
-                                },
-                                limit: {
-                                    type: 'number',
-                                    description: 'Maximum results to return, default 10',
-                                    default: 10
-                                }
-                            },
-                            required: ['query']
-                        }
-                    },
-                    {
-                        name: 'read_writeup',
-                        description: 'Read writeup content by ID (from search results, format: [1]) or by full path. Shows full file or specific line range. Format: id=1 or path="/full/path". Optional lines="100-150" or "50" for around line.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                id: {
-                                    type: 'number',
-                                    description: 'Result ID from search, format: [1], [2], etc. PRIORITY over path'
-                                },
-                                path: {
-                                    type: 'string',
-                                    description: 'Full path to writeup file, e.g. "/home/Serebr1k/kraber/knowledge_base/...". Use ONLY if no id'
-                                },
-                                lines: {
-                                    type: 'string',
-                                    description: 'Line range: "100-150" (lines 100-150), "50" (around line 50), "100-" (from line 100). Default: first 100 lines',
-                                    default: "1-100"
-                                }
-                            }
-                        }
-                    },
-                    {
-                        name: 'help',
-                        description: 'Show detailed help for writeups MCP tools',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                tool: {
-                                    type: 'string',
-                                    description: 'Tool name: "search", "read", or "all"',
-                                    default: "all"
-                                }
-                            }
-                        }
-                    }
-                ]
-            };
-        });
-        
-        this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-            const name = request.params?.name;
-            const args = request.params?.arguments || {};
-            
-            if (name === 'search_writeups') {
-                if (!args.query || args.query.trim() === '') {
-                    return { content: [{ type: 'text', text: HELP_TEXT.invalid + '\n\n' + HELP_TEXT.search }] };
-                }
-                return await this.search(args.query, args.limit || 10);
-            } else if (name === 'read_writeup') {
-                if (!args.id && !args.path) {
-                    return { content: [{ type: 'text', text: 'Error: Must provide id or path\n\n' + HELP_TEXT.read }] };
-                }
-                if (args.id && isNaN(args.id)) {
-                    return { content: [{ type: 'text', text: 'Error: id must be a number like 1, 2, 3 (from [1], [2] in search results)\n\n' + HELP_TEXT.read }] };
-                }
-                return await this.readWriteup(args.id, args.path, args.lines);
-            } else if (name === 'help') {
-                const tool = args.tool || 'all';
-                if (tool === 'all') return { content: [{ type: 'text', text: HELP_TEXT.search + '\n\n' + HELP_TEXT.read }] };
-                if (tool === 'search') return { content: [{ type: 'text', text: HELP_TEXT.search }] };
-                if (tool === 'read') return { content: [{ type: 'text', text: HELP_TEXT.read }] };
-                return { content: [{ type: 'text', text: 'Unknown tool: ' + tool + '. Use: search, read, or all' }] };
-            }
-            
-            return { content: [{ type: 'text', text: HELP_TEXT.invalid }] };
-        });
+        if (tool === 'all') {
+            return { content: [{ type: 'text', text: helpText.search + '\n\n' + helpText.read }] };
+        }
+        if (tool === 'search') return { content: [{ type: 'text', text: helpText.search }] };
+        if (tool === 'read') return { content: [{ type: 'text', text: helpText.read }] };
+        return { content: [{ type: 'text', text: 'Unknown tool: ' + tool + '. Use: search, read, or all' }] };
     }
     
-    search(query, limit) {
+    async search(searchQuery, limit) {
         try {
             const db = new Database(DB_PATH, { readonly: true });
             
@@ -198,20 +240,19 @@ class WriteupsMCPServer {
                 LIMIT ?
             `);
             
-            const rows = stmt.all(query, limit);
+            const rows = stmt.all(searchQuery, limit);
             
             if (rows.length === 0) {
                 db.close();
-                return { content: [{ type: 'text', text: `Ничего не найдено по запросу "${query}".\nПопробуй другие ключевые слова или уменьши limit.\n\nЧто есть в базе: CTF writeups, HackTricks, техники безопасности, уязвимости, гайды по эксплуатации.` }] };
+                return { content: [{ type: 'text', text: 'Nothing found for "' + searchQuery + '". Try different keywords.\n\nDatabase: CTF writeups, HackTricks, security techniques, vulnerabilities, exploitation guides.' }] };
             }
             
             const results = [];
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
+            for (const row of rows) {
                 const snippetStmt = db.prepare(`SELECT snippet(docs_fts, -1, '===', '===', '...', 10) as snippet FROM docs_fts WHERE rowid = ?`);
                 const snippetRow = snippetStmt.get(row.id);
                 
-                let lineInfo = "";
+                let lineInfo = '';
                 if (snippetRow && snippetRow.snippet) {
                     const fullStmt = db.prepare(`SELECT content FROM docs_fts WHERE rowid = ?`);
                     const fullRow = fullStmt.get(row.id);
@@ -220,28 +261,28 @@ class WriteupsMCPServer {
                         if (matchPos >= 0) {
                             const beforeMatch = fullRow.content.substring(0, matchPos);
                             const lineNum = (beforeMatch.match(/\n/g) || []).length + 1;
-                            lineInfo = ` (lines ~${lineNum}-${lineNum + 10})`;
+                            lineInfo = ' (lines ~' + lineNum + '-' + (lineNum + 10) + ')';
                         }
                     }
                 }
                 
                 const resultId = this.cacheId++;
-                this.cache.set(resultId, { path: row.path, db });
+                this.cache.set(resultId, { path: row.path });
                 
                 results.push({
                     type: 'text',
-                    text: `[${resultId}] ${row.title}${lineInfo}\nPath: ${row.path}\n---snippet---\n${snippetRow?.snippet || 'No preview'}\n`
+                    text: '[' + resultId + '] ' + row.title + lineInfo + '\nPath: ' + row.path + '\n---snippet---\n' + (snippetRow?.snippet || 'No preview') + '\n'
                 });
             }
             
             db.close();
             return { content: results };
         } catch (error) {
-            return { content: [{ type: 'text', text: 'Error: ' + error.message + '\n\n' + HELP_TEXT.search }] };
+            return { content: [{ type: 'text', text: 'Error: ' + error.message }] };
         }
     }
     
-    readWriteup(id, pathArg, linesArg) {
+    async readWriteup(id, pathArg, linesArg) {
         try {
             let filePath;
             
@@ -250,11 +291,11 @@ class WriteupsMCPServer {
             } else if (pathArg) {
                 filePath = pathArg;
             } else {
-                return { content: [{ type: 'text', text: HELP_TEXT.read }] };
+                return { content: [{ type: 'text', text: 'Error: provide id (from search results) or path. Example: read_writeup({id: 1}) or read_writeup({path: "/full/path.md"})' }] };
             }
             
             if (!fs.existsSync(filePath)) {
-                return { content: [{ type: 'text', text: 'Файл не найден: ' + filePath + '\nПроверь путь или выполни новый поиск.' }] };
+                return { content: [{ type: 'text', text: 'File not found: ' + filePath + '\nCheck path or run new search.' }] };
             }
             
             let content = fs.readFileSync(filePath, 'utf-8');
@@ -278,26 +319,26 @@ class WriteupsMCPServer {
                 } else {
                     const lineNum = parseInt(linesArg);
                     if (isNaN(lineNum)) {
-                        return { content: [{ type: 'text', text: 'Invalid line format. Use: "100-150", "50", "100-", or omit.\n\n' + HELP_TEXT.read }] };
+                        return { content: [{ type: 'text', text: 'Invalid lines format. Use: "100-150", "50", "100-", or omit.' }] };
                     }
                     startLine = Math.max(1, lineNum - 10);
                     endLine = Math.min(lines.length, lineNum + 10);
                 }
-                range = ` (lines ${startLine}-${endLine})`;
+                range = ' (lines ' + startLine + '-' + endLine + ')';
             }
             
             const selectedLines = lines.slice(startLine - 1, endLine);
-            const display = selectedLines.map((l, i) => `${startLine + i}: ${l}`).join('\n');
+            const display = selectedLines.map((l, i) => (startLine + i) + ': ' + l).join('\n');
             const total = lines.length;
             
             return {
                 content: [{
                     type: 'text',
-                    text: `=== ${path.basename(filePath)}${range} === (total ${total} lines)\n\n${display}\n\n---end---\nID ${id} для этого файла больше недействителен - нужно снова искать если хочешь прочитать другой раздел.`
+                    text: '=== ' + path.basename(filePath) + range + ' === (total ' + total + ' lines)\n\n' + display + '\n\n---end---\nNote: ID ' + id + ' is now invalid. Search again to get new ID.'
                 }]
             };
         } catch (error) {
-            return { content: [{ type: 'text', text: 'Error: ' + error.message + '\n\n' + HELP_TEXT.read }] };
+            return { content: [{ type: 'text', text: 'Error: ' + error.message }] };
         }
     }
     
@@ -305,14 +346,14 @@ class WriteupsMCPServer {
         try {
             const transport = new StdioServerTransport();
             await this.server.connect(transport);
-            console.error("Writeups MCP Server started. Waiting for requests...");
+            console.error('Writeups MCP Server started. Waiting for requests...');
             
             process.on('SIGINT', () => {
-                console.error("Shutting down Writeups MCP Server...");
+                console.error('Shutting down Writeups MCP Server...');
                 process.exit(0);
             });
         } catch (error) {
-            console.error("Failed to start MCP Writeups Server:", error);
+            console.error('Failed to start MCP Writeups Server:', error);
             process.exit(1);
         }
     }
