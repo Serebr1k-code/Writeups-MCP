@@ -152,20 +152,15 @@ class WriteupsMCPServer {
             const args = request.params?.arguments || {};
             
             if (name === 'search_writeups') {
-                if (!args.query || args.query.trim() === '') {
-                    return { content: [{ type: 'text', text: 'Error: query is required. Use: search_writeups({query: "your search terms", limit: 10})' }] };
-                }
+                if (!args.query) return { content: [{ type: 'text', text: 'query required' }] };
                 return await this.search(args.query, args.limit || 10);
             } else if (name === 'read_writeup') {
-                if (!args.id && !args.path) {
-                    return { content: [{ type: 'text', text: 'Error: provide id (from search) or path. Example: read_writeup({id: 1}) or read_writeup({path: "/full/path.md", lines: "1-50"})' }] };
-                }
+                if (!args.id && !args.path) return { content: [{ type: 'text', text: 'need id or path' }] };
                 return await this.readWriteup(args.id, args.path, args.lines);
             } else if (name === 'help') {
                 return this.getHelp(args.tool || 'all');
             }
-            
-            return { content: [{ type: 'text', text: 'Unknown tool: ' + name + '. Available: search_writeups, read_writeup, help' }] };
+            return { content: [{ type: 'text', text: 'Unknown: ' + name }] };
         });
     }
     
@@ -231,115 +226,46 @@ class WriteupsMCPServer {
     async search(searchQuery, limit) {
         try {
             const db = new Database(DB_PATH, { readonly: true });
-            
-            const stmt = db.prepare(`
-                SELECT d.rowid as id, d.title, d.path
-                FROM docs d
-                JOIN docs_fts f ON d.rowid = f.rowid
-                WHERE docs_fts MATCH ?
-                LIMIT ?
-            `);
-            
+            const stmt = db.prepare('SELECT d.rowid as id, d.title, d.path FROM docs d JOIN docs_fts f ON d.rowid = f.rowid WHERE docs_fts MATCH ? LIMIT ?');
             const rows = stmt.all(searchQuery, limit);
             
-            if (rows.length === 0) {
-                db.close();
-                return { content: [{ type: 'text', text: 'Nothing found for "' + searchQuery + '". Try different keywords.\n\nDatabase: CTF writeups, HackTricks, security techniques, vulnerabilities, exploitation guides.' }] };
-            }
+            if (rows.length === 0) return { content: [{ type: 'text', text: 'Not found: ' + searchQuery }] };
             
-            const results = [];
+            let out = '=== Found ' + rows.length + ' ===\n\n';
             for (const row of rows) {
-                const snippetStmt = db.prepare(`SELECT snippet(docs_fts, -1, '===', '===', '...', 10) as snippet FROM docs_fts WHERE rowid = ?`);
-                const snippetRow = snippetStmt.get(row.id);
-                
-                let lineInfo = '';
-                if (snippetRow && snippetRow.snippet) {
-                    const fullStmt = db.prepare(`SELECT content FROM docs_fts WHERE rowid = ?`);
-                    const fullRow = fullStmt.get(row.id);
-                    if (fullRow && fullRow.content) {
-                        const matchPos = fullRow.content.indexOf(snippetRow.snippet.substring(10, 50));
-                        if (matchPos >= 0) {
-                            const beforeMatch = fullRow.content.substring(0, matchPos);
-                            const lineNum = (beforeMatch.match(/\n/g) || []).length + 1;
-                            lineInfo = ' (lines ~' + lineNum + '-' + (lineNum + 10) + ')';
-                        }
-                    }
-                }
-                
-                const resultId = this.cacheId++;
-                this.cache.set(resultId, { path: row.path });
-                
-                results.push({
-                    type: 'text',
-                    text: '[' + resultId + '] ' + row.title + lineInfo + '\nPath: ' + row.path + '\n---snippet---\n' + (snippetRow?.snippet || 'No preview') + '\n'
-                });
+                const sr = db.prepare("SELECT snippet(docs_fts, -1, ' ', ' ', ' ', 10) as s FROM docs_fts WHERE rowid = ?").get(row.id);
+                const cid = this.cacheId++;
+                this.cache.set(cid, { path: row.path });
+                out += cid + '. ' + row.title + '\n';
+                out += '   ' + row.path.replace('/home/Serebr1k/kraber/knowledge_base/', '') + '\n';
+                const snippet = (sr?.s || '').replace(/==/g, '').replace(/\n/g, ' ').substring(0, 80);
+                if (snippet) out += '   ' + snippet + '...\n';
+                out += '\n';
             }
-            
             db.close();
-            return { content: results };
-        } catch (error) {
-            return { content: [{ type: 'text', text: 'Error: ' + error.message }] };
-        }
+            return { content: [{ type: 'text', text: out }] };
+        } catch (e) { return { content: [{ type: 'text', text: 'Error: ' + e.message }] }; }
     }
     
-    async readWriteup(id, pathArg, linesArg) {
+async readWriteup(id, pathArg, linesArg) {
         try {
-            let filePath;
+            const fp = id && this.cache.has(id) ? this.cache.get(id).path : pathArg;
+            if (!fp) return { content: [{ type: 'text', text: 'Need id or path' }] };
+            if (!fs.existsSync(fp)) return { content: [{ type: 'text', text: 'Not found' }] };
             
-            if (id && this.cache.has(id)) {
-                filePath = this.cache.get(id).path;
-            } else if (pathArg) {
-                filePath = pathArg;
-            } else {
-                return { content: [{ type: 'text', text: 'Error: provide id (from search results) or path. Example: read_writeup({id: 1}) or read_writeup({path: "/full/path.md"})' }] };
-            }
-            
-            if (!fs.existsSync(filePath)) {
-                return { content: [{ type: 'text', text: 'File not found: ' + filePath + '\nCheck path or run new search.' }] };
-            }
-            
-            let content = fs.readFileSync(filePath, 'utf-8');
-            let lines = content.split('\n');
-            let range = '';
-            let startLine = 1;
-            let endLine = Math.min(100, lines.length);
-            
+            const lines = fs.readFileSync(fp, 'utf-8').split('\n');
+            let s = 1, e = Math.min(100, lines.length);
             if (linesArg) {
-                const isRange = linesArg.includes('-');
-                const isFrom = linesArg.endsWith('-');
-                
-                if (isRange && !isFrom) {
-                    const [s, e] = linesArg.split('-').map(Number);
-                    startLine = Math.max(1, s || 1);
-                    endLine = Math.min(lines.length, e || lines.length);
-                } else if (isFrom) {
-                    const s = parseInt(linesArg.replace('-', ''));
-                    startLine = Math.max(1, s || 1);
-                    endLine = lines.length;
-                } else {
-                    const lineNum = parseInt(linesArg);
-                    if (isNaN(lineNum)) {
-                        return { content: [{ type: 'text', text: 'Invalid lines format. Use: "100-150", "50", "100-", or omit.' }] };
-                    }
-                    startLine = Math.max(1, lineNum - 10);
-                    endLine = Math.min(lines.length, lineNum + 10);
-                }
-                range = ' (lines ' + startLine + '-' + endLine + ')';
+                if (linesArg.includes('-') && !linesArg.endsWith('-')) { const [a, b] = linesArg.split('-').map(Number); s = Math.max(1, a||1); e = Math.min(lines.length, b||lines.length); }
+                else if (linesArg.endsWith('-')) { s = parseInt(linesArg) || 1; e = lines.length; }
+                else { const n = parseInt(linesArg); s = Math.max(1, n - 10); e = Math.min(lines.length, n + 10); }
             }
             
-            const selectedLines = lines.slice(startLine - 1, endLine);
-            const display = selectedLines.map((l, i) => (startLine + i) + ': ' + l).join('\n');
-            const total = lines.length;
-            
-            return {
-                content: [{
-                    type: 'text',
-                    text: '=== ' + path.basename(filePath) + range + ' === (total ' + total + ' lines)\n\n' + display + '\n\n---end---\nNote: ID ' + id + ' is now invalid. Search again to get new ID.'
-                }]
-            };
-        } catch (error) {
-            return { content: [{ type: 'text', text: 'Error: ' + error.message }] };
-        }
+            let out = path.basename(fp) + ' [lines ' + s + '-' + e + ' of ' + lines.length + ']\n';
+            out += '─'.repeat(50) + '\n';
+            out += lines.slice(s - 1, e).map((l, i) => (s + i).toString().padStart(4) + '| ' + l).join('\n');
+            return { content: [{ type: 'text', text: out }] };
+} catch (e) { return { content: [{ type: 'text', text: 'Error: ' + e.message }] }; }
     }
     
     async start() {
