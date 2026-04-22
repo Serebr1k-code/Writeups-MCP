@@ -1,0 +1,13 @@
+[Unit]
+Description=Writeups MCP (FastAPI)
+After=network.target
+
+[Service]
+User=Serebr1k
+WorkingDirectory=/home/Serebr1k/writeups-mcp-opencode
+Environment=WRITEUPS_DB=/home/Serebr1k/writeups-mcp-opencode/data/writeups_index.db
+ExecStart=/home/Serebr1k/venv-writeups-mcp/bin/uvicorn service:app --host 127.0.0.1 --port 9001 --workers 1
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

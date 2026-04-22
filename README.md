@@ -16,3 +16,27 @@ Search from Python:
   from client import WriteupsClient
   c = WriteupsClient('http://localhost:9001')
   c.search('privilege escalation')
+
+OpenCode integration
+--------------------
+
+Add the following block into your .config/opencode/config.json under the "mcp" object:
+
+  "writeups-mcp": {
+    "enabled": true,
+    "type": "local",
+    "command": [
+      "/home/Serebr1k/venv-writeups-mcp/bin/uvicorn",
+      "service:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "9001"
+    ],
+    "environment": {
+      "WRITEUPS_DB": "/home/Serebr1k/writeups-mcp-opencode/data/writeups_index.db",
+      "PYTHONPATH": "/home/Serebr1k/writeups-mcp-opencode"
+    }
+  }
+
+This will start the FastAPI service as an MCP. Agents can then POST to http://127.0.0.1:9001/search with JSON {"q":"query","limit":10}.
