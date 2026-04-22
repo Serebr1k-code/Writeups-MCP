@@ -40,3 +40,10 @@ Add the following block into your .config/opencode/config.json under the "mcp" o
   }
 
 This will start the FastAPI service as an MCP. Agents can then POST to http://127.0.0.1:9001/search with JSON {"q":"query","limit":10}.
+
+Auto-port selection
+-------------------
+
+When launching via run.sh (recommended wrapper), the service will pick a free port from the list in the environment variable WRITEUPS_PORTS (space-separated) or the default range 9001..9005. The chosen port is written to /home/Serebr1k/writeups-mcp-opencode/port.info.
+
+If you use the direct uvicorn command in OpenCode config.json, keep port in sync with WRITEUPS_DB and port chosen by run.sh (or call run.sh in command instead).
