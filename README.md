@@ -1,49 +1,108 @@
-Writeups MCP for OpenCode
-=========================
+# Writeups MCP for OpenCode
 
-This project provides:
-- a cleaner indexer for the Kraber writeups knowledge base
-- a FastAPI search service exposing endpoints agents can call
-- a Python client wrapper + CLI
+MCP сервер для поиска и чтения CTF writeups и другой документации по безопасности.
 
-Build index:
-  python3 build_index.py --source /home/Serebr1k/kraber/knowledge_base --db data/writeups_index.db
+## Содержимое базы
 
-Run service:
-  uvicorn service:app --host 0.0.0.0 --port 9001
+- CTF writeups (Writeups Team Knapsack)
+- HackTricks (техники взлома)
+- Описания уязвимостей
+- Руководства по эксплуатации
+- Читшиты и шпаргалки
+- Документация по безопасности
 
-Search from Python:
-  from client import WriteupsClient
-  c = WriteupsClient('http://localhost:9001')
-  c.search('privilege escalation')
+## Быстрый старт
 
-OpenCode integration
---------------------
+### 1. Запуск MCP
 
-Add the following block into your .config/opencode/config.json under the "mcp" object:
+```bash
+cd /home/Serebr1k/writeups-mcp-opencode
+node index.js
+```
 
-  "writeups-mcp": {
-    "enabled": true,
-    "type": "local",
-    "command": [
-      "/home/Serebr1k/venv-writeups-mcp/bin/uvicorn",
-      "service:app",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "9001"
-    ],
-    "environment": {
-      "WRITEUPS_DB": "/home/Serebr1k/writeups-mcp-opencode/data/writeups_index.db",
-      "PYTHONPATH": "/home/Serebr1k/writeups-mcp-opencode"
-    }
-  }
+### 2. Использование инструментов
 
-This will start the FastAPI service as an MCP. Agents can then POST to http://127.0.0.1:9001/search with JSON {"q":"query","limit":10}.
+#### search_writeups - Поиск
 
-Auto-port selection
--------------------
+```javascript
+// Поиск по ключевым словам
+{tool: "search_writeups", args: {query: "SQL injection", limit: 5}}
 
-When launching via run.sh (recommended wrapper), the service will pick a free port from the list in the environment variable WRITEUPS_PORTS (space-separated) or the default range 9001..9005. The chosen port is written to /home/Serebr1k/writeups-mcp-opencode/port.info.
+// Поиск техники
+{tool: "search_writeups", args: {query: "privilege escalation windows"}}
 
-If you use the direct uvicorn command in OpenCode config.json, keep port in sync with WRITEUPS_DB and port chosen by run.sh (or call run.sh in command instead).
+// Поиск CVE
+{tool: "search_writeups", args: {query: "CVE-2024-1709"}}
+```
+
+Возвращает нумерованный список `[1]`, `[2]`, `[3]`...
+
+#### read_writeup - Чтение
+
+```javascript
+// Чтение по ID из поиска
+{tool: "read_writeup", args: {id: 1}}
+
+// Чтение с диапазоном строк
+{tool: "read_writeup", args: {id: 1, lines: "1-50"}}
+
+// Чтение по пути
+{tool: "read_writeup", args: {path: "/home/Serebr1k/kraber/knowledge_base/..."}}
+
+// Чтение вокруг конкретной строки
+{tool: "read_writeup", args: {id: 1, lines: "100"}}
+```
+
+#### help - Справка
+
+```javascript
+// Полная справка
+{tool: "help", args: {tool: "all"}}
+
+// Только про поиск
+{tool: "help", args: {tool: "search"}}
+
+// Только про чтение
+{tool: "help", args: {tool: "read"}}
+```
+
+## Интеграция с OpenCode
+
+Добавь в `.config/opencode/config.json`:
+
+```json
+"writeups-mcp": {
+  "enabled": true,
+  "type": "local",
+  "command": ["node", "/home/Serebr1k/writeups-mcp-opencode/index.js"],
+  "environment": {
+    "WRITEUPS_DB": "/home/Serebr1k/writeups-mcp-opencode/data/writeups_index.db"
+  },
+  "workingDirectory": "/home/Serebr1k/writeups-mcp-opencode"
+}
+```
+
+## Пример использования агентом
+
+```
+Агент: Найди информацию про SQL injection
+-> search_writeups({query: "SQL injection", limit: 5})
+
+Результат:
+[1] SQLite Injection (lines ~1-11)
+Path: /home/Serebr1k/kraber/knowledge_base/SQL Injection/SQLite Injection.md
+---snippet---
+...
+
+[2] MSSQL Injection (lines ~1-11)
+...
+
+Агент: Прочитай первый результат
+-> read_writeup({id: 1, lines: "1-30"})
+
+Содержимое файла...
+```
+
+## Переменные окружения
+
+- `WRITEUPS_DB` - путь к SQLite базе с индексом (по умолчанию: ~/writeups-mcp-opencode/data/writeups_index.db)
