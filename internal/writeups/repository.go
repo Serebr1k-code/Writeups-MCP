@@ -121,7 +121,24 @@ func (r *Repository) ResolvePathByID(id int) (string, error) {
 		return "", err
 	}
 
-	return filePath, nil
+	return resolveStoredPath(filePath), nil
+}
+
+func resolveStoredPath(filePath string) string {
+	trimmed := strings.TrimSpace(filePath)
+	if trimmed == "" {
+		return ""
+	}
+
+	if filepath.IsAbs(trimmed) {
+		return filepath.Clean(trimmed)
+	}
+
+	if dataPath := strings.TrimSpace(os.Getenv("DATA_PATH")); dataPath != "" {
+		return filepath.Join(dataPath, trimmed)
+	}
+
+	return filepath.Clean(trimmed)
 }
 
 func (r *Repository) Read(id int, directPath, linesArg string) (*ReadResult, error) {
